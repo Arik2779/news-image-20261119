@@ -1,107 +1,134 @@
-// news-image-20261119 entry (Node 22, standard library only).
+// main.ts — entry runner for the news-image-20261119 competition.
 //
-// The picture is a newspaper front page summing up the world's news of
-// Thursday 19 November 2026: masthead "WORLD NEWS" dated that day, with four
-// illustrated panels — TRUMP, XI, PUTIN MEET IN SHENZHEN (first-ever
-// trilateral summit, leaders at a summit table), GTA VI OUT TODAY (neon
-// Vice City street, 13-year wait over), CYCLONE AKVAN BEARS DOWN (cyclone
-// over the Bay of Bengal; red alert on India's east coast, landfall due
-// Friday), and INDIA-JAPAN 2+2 TALKS IN TOKYO (ministers shaking hands).
-// The image was generated for this entry, and the program below simply
-// delivers it to the grader's output directory — after first checking the
-// file is a PNG or JPEG of exactly 1024x1024 px and no more than 1 MiB,
-// as the competition requires.
+// The entry is a newspaper front page for Thursday 19 November 2026.
+// Masthead "WORLD NEWS" with the date shown, and four illustrated panels
+// covering four verified stories from that day:
+//   1. Trump–Xi–Putin trilateral summit in Shenzhen.
+//   2. The launch of GTA VI.
+//   3. Cyclone Akvan.
+//   4. India–Japan 2+2 ministerial talks in Tokyo.
 //
-// Run it the way the kit does:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-// The program runs twice and must write the same bytes both times; a
-// byte-for-byte copy of one fixed file always does.
+// What this program does: it takes the image file sitting next to it
+// (entry.png), checks that it is a genuine 1024x1024 PNG or JPEG under
+// 1 MiB, and copies it unchanged to $MAKEFUN_OUTPUT_DIR/entry.png
+// (default /output). After the copy it reads the output back and proves
+// it is byte-for-byte the same file. Any failed check stops the run with
+// a non-zero exit code before anything is written.
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-
-// The image lives beside this file in the repository, and the output
-// directory is the grader's /output unless MAKEFUN_OUTPUT_DIR says so.
-const source = new URL('./entry.png', import.meta.url);
-const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-const target = join(outputDir, 'entry.png');
-
-if (!existsSync(source)) {
-  throw new Error('entry.png is missing beside main.ts');
-}
-
-// The competition caps the source image at 1 MiB: refuse an oversized
-// file instead of handing the judge an entry that breaks the rules.
-const MAX_SOURCE_BYTES = 1048576;
-const sourceBytes = statSync(source).size;
-if (sourceBytes > MAX_SOURCE_BYTES) {
-  throw new Error(
-    `entry.png is ${sourceBytes} bytes, over the 1 MiB competition cap`,
-  );
-}
-
-// The competition requires the source image to be exactly 1024x1024 px:
-// read the dimensions out of the file header — PNG IHDR or JPEG SOF
-// marker — and refuse an image of any other size instead of submitting an
-// entry that breaks the rules.
-function readDimensions(bytes: Buffer): { width: number; height: number } {
-  if (
-    bytes.length >= 24 &&
-    bytes[0] === 0x89 &&
-    bytes[1] === 0x50 &&
-    bytes[2] === 0x4e &&
-    bytes[3] === 0x47
-  ) {
-    return {
-      width: bytes.readUInt32BE(16),
-      height: bytes.readUInt32BE(20),
-    };
-  }
-  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8) {
-    let offset = 2;
-    while (offset + 9 < bytes.length) {
-      if (bytes[offset] !== 0xff) {
-        throw new Error('entry.png has a malformed JPEG segment');
-      }
-      const marker = bytes[offset + 1];
-      const length = bytes.readUInt16BE(offset + 2);
-      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-        return {
-          height: bytes.readUInt16BE(offset + 5),
-          width: bytes.readUInt16BE(offset + 7),
-        };
-      }
-      offset += 2 + length;
-    }
-    throw new Error('entry.png has no JPEG SOF marker');
-  }
-  throw new Error('entry.png is neither PNG nor JPEG');
-}
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const REQUIRED_WIDTH = 1024;
 const REQUIRED_HEIGHT = 1024;
-const { width, height } = readDimensions(readFileSync(source));
+const MAX_FILE_BYTES = 1048576; // 1 MiB
+
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47];
+const JPEG_SIGNATURE = [0xff, 0xd8];
+
+function die(message: string): never {
+  console.error(`error: ${message}`);
+  process.exit(1);
+}
+
+function startsWith(bytes: Buffer, prefix: number[]): boolean {
+  if (bytes.length < prefix.length) return false;
+  return prefix.every((value, index) => bytes[index] === value);
+}
+
+// Read the width and height out of a PNG's IHDR chunk. In a valid PNG the
+// first chunk is always IHDR: 8-byte signature, 4-byte length, the ASCII
+// tag "IHDR", then width and height as big-endian 32-bit integers.
+function pngDimensions(bytes: Buffer): { width: number; height: number } {
+  if (bytes.length < 24) die("PNG file is too short to hold an IHDR chunk");
+  if (bytes.toString("ascii", 12, 16) !== "IHDR") {
+    die("PNG file has no IHDR chunk where one is expected");
+  }
+  return {
+    width: bytes.readUInt32BE(16),
+    height: bytes.readUInt32BE(20),
+  };
+}
+
+// Walk a JPEG's marker segments until a Start Of Frame marker is found.
+// A frame header holds: 2-byte length, 1-byte precision, then height and
+// width as big-endian 16-bit integers. Markers without a length field
+// (TEM, restart markers) are stepped over; reaching the scan data (SOS)
+// without seeing a frame means the file is malformed.
+function jpegDimensions(bytes: Buffer): { width: number; height: number } {
+  const FRAME_MARKERS = new Set([
+    0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7,
+    0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
+  ]);
+  let offset = 2; // past the SOI marker (FF D8)
+  while (offset + 9 <= bytes.length) {
+    if (bytes[offset] !== 0xff) die("malformed JPEG: expected a marker prefix");
+    const marker = bytes[offset + 1];
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) {
+      offset += 2; // standalone marker, no length field follows
+      continue;
+    }
+    if (marker === 0xda) die("malformed JPEG: reached scan data without a frame header");
+    const segmentLength = bytes.readUInt16BE(offset + 2);
+    if (segmentLength < 2) die("malformed JPEG: segment length is invalid");
+    if (FRAME_MARKERS.has(marker)) {
+      return {
+        height: bytes.readUInt16BE(offset + 5),
+        width: bytes.readUInt16BE(offset + 7),
+      };
+    }
+    offset += 2 + segmentLength;
+  }
+  die("malformed JPEG: no Start Of Frame marker found");
+}
+
+const entryDir = path.dirname(fileURLToPath(import.meta.url));
+const sourcePath = path.join(entryDir, "entry.png");
+const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
+const outputPath = path.join(outputDir, "entry.png");
+
+let source: Buffer;
+try {
+  source = fs.readFileSync(sourcePath);
+} catch (error) {
+  die(`cannot read ${sourcePath}: ${(error as Error).message}`);
+}
+
+if (source.length === 0) die("entry.png is empty");
+if (source.length > MAX_FILE_BYTES) {
+  die(`entry.png is ${source.length} bytes, over the 1 MiB limit (${MAX_FILE_BYTES})`);
+}
+
+const isPng = startsWith(source, PNG_SIGNATURE);
+const isJpeg = startsWith(source, JPEG_SIGNATURE);
+if (!isPng && !isJpeg) {
+  die("entry.png is neither PNG nor JPEG (magic bytes do not match)");
+}
+
+const { width, height } = isPng ? pngDimensions(source) : jpegDimensions(source);
 if (width !== REQUIRED_WIDTH || height !== REQUIRED_HEIGHT) {
-  throw new Error(
-    `entry.png is ${width}x${height}, not the required 1024x1024`,
-  );
+  die(`entry.png is ${width}x${height}, expected ${REQUIRED_WIDTH}x${REQUIRED_HEIGHT}`);
 }
 
-mkdirSync(outputDir, { recursive: true });
-copyFileSync(source, target);
-
-// A copied file must actually hold the picture: refuse an empty,
-// truncated or wrong-format write instead of handing the judge a
-// broken file. JPEG starts FF D8, PNG starts 89 50 4E 47.
-const copiedBytes = statSync(target).size;
-const head = readFileSync(target).subarray(0, 4);
-const isJpeg = head[0] === 0xff && head[1] === 0xd8;
-const isPng =
-  head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47;
-if (
-  copiedBytes === 0 ||
-  copiedBytes !== statSync(source).size ||
-  (!isJpeg && !isPng)
-) {
-  throw new Error('entry.png was not copied whole');
+try {
+  fs.mkdirSync(outputDir, { recursive: true });
+  fs.copyFileSync(sourcePath, outputPath);
+} catch (error) {
+  die(`cannot write ${outputPath}: ${(error as Error).message}`);
 }
+
+let copied: Buffer;
+try {
+  copied = fs.readFileSync(outputPath);
+} catch (error) {
+  die(`cannot read back ${outputPath}: ${(error as Error).message}`);
+}
+if (copied.length === 0) die("output file is empty");
+if (copied.length !== source.length) {
+  die(`output is ${copied.length} bytes, source is ${source.length} bytes`);
+}
+if (!copied.equals(source)) die("output bytes differ from source");
+
+console.log(
+  `entry.png (${source.length} bytes, ${width}x${height}) copied to ${outputPath} and verified byte-identical.`,
+);
