@@ -8,7 +8,9 @@
 // over the Bay of Bengal; red alert on India's east coast, landfall due
 // Friday), and INDIA-JAPAN 2+2 TALKS IN TOKYO (ministers shaking hands).
 // The image was generated for this entry, and the program below simply
-// delivers it to the grader's output directory.
+// delivers it to the grader's output directory — after first checking the
+// file is a PNG or JPEG of exactly 1024x1024 px and no more than 1 MiB,
+// as the competition requires.
 //
 // Run it the way the kit does:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
@@ -38,9 +40,10 @@ if (sourceBytes > MAX_SOURCE_BYTES) {
   );
 }
 
-// The competition caps each side at 1024 px: read the dimensions out of
-// the file header — PNG IHDR or JPEG SOF marker — and refuse an oversized
-// image instead of submitting an entry that breaks the rules.
+// The competition requires the source image to be exactly 1024x1024 px:
+// read the dimensions out of the file header — PNG IHDR or JPEG SOF
+// marker — and refuse an image of any other size instead of submitting an
+// entry that breaks the rules.
 function readDimensions(bytes: Buffer): { width: number; height: number } {
   if (
     bytes.length >= 24 &&
@@ -75,11 +78,12 @@ function readDimensions(bytes: Buffer): { width: number; height: number } {
   throw new Error('entry.png is neither PNG nor JPEG');
 }
 
-const MAX_SIDE_PX = 1024;
+const REQUIRED_WIDTH = 1024;
+const REQUIRED_HEIGHT = 1024;
 const { width, height } = readDimensions(readFileSync(source));
-if (width > MAX_SIDE_PX || height > MAX_SIDE_PX) {
+if (width !== REQUIRED_WIDTH || height !== REQUIRED_HEIGHT) {
   throw new Error(
-    `entry.png is ${width}x${height}, over the 1024 px competition cap`,
+    `entry.png is ${width}x${height}, not the required 1024x1024`,
   );
 }
 
